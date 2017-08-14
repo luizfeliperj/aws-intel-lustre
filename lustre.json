@@ -1,0 +1,1368 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Parameters": {
+    "OssSize": {
+      "Type": "Number",
+      "Description": "Number of ost instances",
+      "Default": "1"
+    },
+    "ClientSize": {
+      "Type": "Number",
+      "Description": "Number of client instances",
+      "Default": "1"
+    },
+    "FsName": {
+      "Type": "String",
+      "Description": "Filesystem name",
+      "Default": "lustre"
+    },
+    "MgtPrice": {
+      "Type": "Number",
+      "Description": "Maximum price for Management client spot",
+      "Default": "0.0071"
+    },
+    "OssPrice": {
+      "Type": "Number",
+      "Description": "Maximum price for lustre spot",
+      "Default": "0.0071"
+    },
+    "ClientPrice": {
+      "Type": "Number",
+      "Description": "Maximum price for client spot",
+      "Default": "0.0071"
+    },
+    "MgtInstance": {
+      "Type": "String",
+      "Description": "Lustre Management instance type",
+      "Default": "m1.small"
+    },
+    "OssInstance": {
+      "Type": "String",
+      "Description": "Lustre instance type",
+      "Default": "m1.small"
+    },
+    "ClientInstance": {
+      "Type": "String",
+      "Description": "Client instance type",
+      "Default": "m1.small"
+    },
+    "MgtImage": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "Lustre Management image ID",
+      "Default": "ami-e5d12488"
+    },
+    "OssImage": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "Lustre OST image ID",
+      "Default": "ami-e5d12488"
+    },
+    "ClientImage": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "Client image ID",
+      "Default": "ami-e5d12488"
+    },
+    "KeyPair": {
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Description": "Select a keypair",
+      "Default": "identity-luizfeliperj"
+    },
+    "AvailabilityZone": {
+      "Type": "AWS::EC2::AvailabilityZone::Name",
+      "Description": "Select your availability zone",
+      "Default": "us-east-1c"
+    },
+    "ImportBucket": {
+      "Default": "ep-petro",
+      "Description": "[Optional] Bucket to import data from.",
+      "Type": "String"
+    },
+    "ImportPrefix": {
+      "Default": "",
+      "Description": "[Optional] Import all keys below prefix in ImportBucket. If unspecified, all keys in ImportBucket will be imported.",
+      "Type": "String"
+    },
+    "ImportDest": {
+      "Default": "ep-petro",
+      "Description": "[Optional] Subdirectory in Lustre filesystem to import data into. Will default to ImportPrefix, if specified. ",
+      "Type": "String"
+    }
+  },
+  "Outputs" : {
+    "DynamoDB" : {
+      "Description": "Name of the DynamoDB used to control cluster resources",
+      "Value": { "Ref" : "FilesystemTable" }
+    }
+  },
+  "Resources": {
+    "FilesystemTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "KeySchema": {
+          "HashKeyElement": {
+            "AttributeName": "id",
+            "AttributeType": "S"
+            }
+          },
+          "ProvisionedThroughput": {
+            "ReadCapacityUnits": "10",
+            "WriteCapacityUnits": "5"
+          }
+        }
+    },
+    "Role": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Effect" : "Allow",
+              "Action" : [ "sts:AssumeRole" ],
+              "Principal" : { "Service" : [ "ec2.amazonaws.com" ] }
+            }
+          ]
+        }
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "DependsOn": "Role",
+      "Properties": {
+        "Path": "/",
+        "Roles": [ { "Ref" : "Role" } ]
+      }
+    },
+    "Policy": {
+      "Type": "AWS::IAM::Policy",
+      "DependsOn": "InstanceProfile",
+      "Properties": {
+        "PolicyName": "policy",
+        "Roles": [ { "Ref": "Role" } ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Resource": "*",
+              "Action": [
+                "EC2:DescribeInstances",
+                "EC2:TerminateInstances",
+                "EC2:DescribeInstancesStatus",
+                "EC2:AttachNetworkInterface",
+                "EC2:CreateTags",
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:ListBucket",
+                "s3:CreateBucket",
+                "s3:DeleteObject",
+                "s3:ListAllMyBuckets",
+                "DynamoDB:Query",
+                "DynamoDB:GetItem",
+                "DynamoDB:PutItem",
+                "DynamoDB:ListTables",
+                "DynamoDB:UpdateItem",
+                "DynamoDB:CreateTable",
+                "DynamoDB:DescribeTable",
+                "CloudFormation:SignalResource",
+                "AutoScaling:CreateOrUpdateTags",
+                "AutoScaling:SetDesiredCapacity",
+                "AutoScaling:UpdateAutoScalingGroup",
+                "AutoScaling:DescribeAutoScalingGroups",
+                "AutoScaling:TerminateInstanceInAutoScalingGroup"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "VPC": {
+      "DependsOn": "Policy",
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "172.20.0.0/16",
+        "EnableDnsSupport": "true",
+        "EnableDnsHostnames": "true",
+        "InstanceTenancy": "default"
+      }
+    },
+    "InternetGateway": {
+      "DependsOn": "VPC",
+      "Type": "AWS::EC2::InternetGateway"
+    },
+    "VPCGatewayAssociation": {
+      "DependsOn": "InternetGateway",
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "InternetGatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "NetworkAcl": {
+      "DependsOn": "VPC",
+      "Type": "AWS::EC2::NetworkAcl",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" }
+      }
+    },
+    "InboudNetworkAclEntry": {
+      "DependsOn": "NetworkAcl",
+      "Type": "AWS::EC2::NetworkAclEntry",
+      "Properties": {
+        "CidrBlock": "0.0.0.0/0",
+        "NetworkAclId": { "Ref": "NetworkAcl" },
+        "Egress": false,
+        "PortRange": {
+          "From": "0",
+          "To": "65535"
+        },
+        "Protocol": "-1",
+        "RuleAction": "allow",
+        "RuleNumber": "100"
+      }
+    },
+    "OutboundNetworkAclEntry": {
+      "DependsOn": "NetworkAcl",
+      "Type": "AWS::EC2::NetworkAclEntry",
+      "Properties": {
+        "CidrBlock": "0.0.0.0/0",
+        "NetworkAclId": { "Ref": "NetworkAcl" },
+        "Egress": true,
+        "PortRange": {
+          "From": "0",
+          "To": "65535"
+        },
+        "Protocol": "-1",
+        "RuleAction": "allow",
+        "RuleNumber": "100"
+      }
+    },
+    "Interface": {
+      "DependsOn": [ "Subnet" ],
+      "Type": "AWS::EC2::NetworkInterface",
+      "Properties": {
+        "GroupSet": [ { "Ref": "SecurityGroup" } ],
+        "SubnetId": { "Ref": "Subnet" },
+        "SourceDestCheck": false
+      }
+    },
+    "Subnet": {
+      "DependsOn": "VPC",
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": { "Ref": "AvailabilityZone" },
+        "CidrBlock": "172.20.0.0/16",
+        "MapPublicIpOnLaunch": "false",
+        "VpcId": { "Ref": "VPC" }
+      }
+    },
+    "SecurityGroup": {
+      "DependsOn": "Subnet",
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "The Security Group",
+        "VpcId": { "Ref": "VPC" }
+      }
+    },
+    "SecurityGroupIngressSG": {
+      "DependsOn": "SecurityGroup",
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {  "Fn::GetAtt": [ "SecurityGroup", "GroupId" ] },
+        "IpProtocol": "-1",
+        "FromPort": "0",
+        "ToPort": "65535",
+        "SourceSecurityGroupId": { "Fn::GetAtt": [ "SecurityGroup", "GroupId" ] }
+      }
+    },
+    "SecurityGroupIngressSSH": {
+      "DependsOn": "SecurityGroup",
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {  "Fn::GetAtt": [ "SecurityGroup", "GroupId" ] },
+        "CidrIp": "0.0.0.0/0",
+        "IpProtocol": "tcp",
+        "FromPort": "22",
+        "ToPort": "22"
+      }
+    },
+    "SecurityGroupIngressHTTP": {
+      "DependsOn": "SecurityGroup",
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {  "Fn::GetAtt": [ "SecurityGroup", "GroupId" ] },
+        "CidrIp": "164.85.0.0/16",
+        "IpProtocol": "tcp",
+        "FromPort": "80",
+        "ToPort": "80"
+      }
+    },
+    "SecurityGroupIngressHTTPS": {
+      "DependsOn": "SecurityGroup",
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {  "Fn::GetAtt": [ "SecurityGroup", "GroupId" ] },
+        "CidrIp": "164.85.0.0/16",
+        "IpProtocol": "tcp",
+        "FromPort": "443",
+        "ToPort": "443"
+      }
+    },
+    "RouteTable": {
+      "DependsOn": "VPC",
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" }
+      }
+    },
+    "SubnetRouteTableAssociation": {
+      "DependsOn": "RouteTable",
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": { "Ref": "RouteTable" },
+        "SubnetId": { "Ref": "Subnet" }
+      }
+    },
+    "SubnetNetworkAclAssociation": {
+      "DependsOn": [ "NetworkAcl", "InboudNetworkAclEntry", "OutboundNetworkAclEntry", "Subnet" ],
+      "Type": "AWS::EC2::SubnetNetworkAclAssociation",
+      "Properties": {
+        "NetworkAclId": { "Ref": "NetworkAcl" },
+        "SubnetId": { "Ref": "Subnet" }
+      }
+    },
+    "Route": {
+      "DependsOn": [ "SubnetRouteTableAssociation", "SubnetNetworkAclAssociation", "InternetGateway", "RouteTable" ],
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": { "Ref": "InternetGateway" },
+        "RouteTableId": { "Ref": "RouteTable" }
+      }
+    },
+    "S3Endpoint": {
+      "DependsOn": "Route",
+      "Type": "AWS::EC2::VPCEndpoint",
+      "Properties": {
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Resource": [ "arn:aws:s3:::*" ],
+              "Principal": "*",
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:ListBucket",
+                "s3:CreateBucket",
+                "s3:DeleteObject",
+                "s3:ListAllMyBuckets"
+              ]
+            }
+          ]
+        },
+        "VpcId": { "Ref": "VPC" },
+        "RouteTableIds": [ { "Ref": "RouteTable" } ],
+        "ServiceName" : { "Fn::Join": [ "", [ "com.amazonaws.", { "Ref": "AWS::Region" }, ".s3" ] ] }
+      }
+    },
+    "MGSMDS": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "DependsOn": [ "FilesystemTable", "Interface" ],
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "/etc/loci.conf": {
+                "content": {
+                  "Fn::Join": [ "",
+                  [
+                    "[default]\n",
+                    "FsName:", { "Ref": "FsName" }, "\n",
+                    "FilesystemTable:", { "Ref": "FilesystemTable" }, "\n",
+                    "HaEnabled: false\n",
+                    "ImportBucket:", { "Ref": "ImportBucket" }, "\n",
+                    "ImportPrefix:", { "Ref": "ImportPrefix" }, "\n",
+                    "ImportDest:", { "Ref": "ImportDest" }, "\n",
+                    "LogDir: /var/log\n",
+                    "MdtRaid: jbod\n",
+                    "OstRaid: jbod\n",
+                    "MgsUseEbs: false\n",
+                    "MdsUseEbs: false\n",
+                    "OssUseEbs: false\n"
+                  ]
+                ]
+              },
+              "mode": "644",
+              "group": "root",
+              "user": "root"
+              },
+              "/etc/profile.d/aliases.sh": {
+                "content": {
+                  "Fn::Join": [ "",
+                  [
+                    "# Initialization script for bash and sh\n",
+                    "alias ssh=\"/usr/bin/ssh -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n",
+                    "alias scp=\"/usr/bin/scp -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n",
+                    "alias sftp=\"/usr/bin/sftp -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n"
+                  ]
+                ]
+              },
+              "mode": "644",
+              "group": "root",
+              "user": "root"
+              },
+              "/etc/environment": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "ftp_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                      "http_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ]  }, ":8080/\n",
+                      "https_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] },":8080/\n",
+                      "no_proxy=169.254.169.254,instance-data,s3.amazonaws.com,ec2.internal\n"
+                    ]
+                  ]
+                }
+              },
+              "/etc/squid/proxy.conf": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "cache_effective_user nobody\n",
+                      "access_log syslog:daemon.notice squid\n",
+                      "cache_access_log syslog:user.info\n",
+                      "cache_store_log none\n",
+                      "cache_log /dev/null\n",
+                      "cache_mem 1024MB\n",
+                      "via off\n",
+                      "pid_filename /var/run/proxy.pid\n",
+                      "strip_query_terms off\n",
+                      "http_port 127.0.0.1:8080/n",
+                      "http_port 172.20.0.1:8080/n",
+                      "icp_port 0\n",
+                      "acl QUERY urlpath_regex cgi-bin \\?\n",
+                      "no_cache deny QUERY\n",
+                      "acl SSL_ports port 443\n",
+                      "acl Safe_ports port 80\n",
+                      "acl Safe_ports port 443\n",
+                      "acl Safe_ports port 1025-65535\n",
+                      "acl purge method PURGE\n",
+                      "acl CONNECT method CONNECT\n",
+                      "acl localhost src 127.0.0.1/32\n",
+                      "acl localnet src 172.20.0.0/16\n",
+                      "http_access allow purge localnet\n",
+                      "http_access deny purge\n",
+                      "http_access deny !Safe_ports\n",
+                      "http_access deny CONNECT !SSL_ports\n",
+                      "http_access allow localhost\n",
+                      "http_access allow localnet\n",
+                      "http_access deny all\n"
+                    ]
+                  ]
+                }
+              },
+              "/etc/httpd/proxy.conf": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "LoadModule authz_host_module modules/mod_authz_host.so\n",
+                      "LoadModule proxy_module modules/mod_proxy.so\n",
+                      "LoadModule proxy_http_module modules/mod_proxy_http.so\n",
+                      "LoadModule proxy_connect_module modules/mod_proxy_connect.so\n",
+                      "LoadModule cache_module modules/mod_cache.so\n",
+                      "Listen ", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] } ,":8080\n",
+                      "ServerName ", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] } ,"\n",
+                      "Loglevel emerg\n",
+                      "PidFile /tmp/httpproxy.pid\n",
+                      "ErrorLog /dev/null\n",
+                      "ProxyRequests On\n",
+                      "CacheEnable mem /\n",
+                      "User apache\n",
+                      "Group apache\n",
+                      "<Proxy *>\n",
+                      " Order Deny,Allow \n",
+                      " Deny from all \n",
+                      " Allow from all\n",
+                      "</Proxy>\n"
+                    ]
+                  ]
+                }
+              },
+              "/tmp/proxy.conf": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "LoadModule rewrite_module modules/mod_rewrite.so\n",
+                      "LoadModule proxy_module modules/mod_proxy.so\n",
+                      "LoadModule proxy_http_module modules/mod_proxy_http.so\n",
+                      "Listen 127.0.0.1:3128\n",
+                      "ServerName localhost\n",
+                      "Loglevel emerg\n",
+                      "PidFile /tmp/proxy.pid\n",
+                      "ErrorLog /dev/null\n",
+                      "RewriteEngine On\n",
+                      "RewriteCond %{REQUEST_URI} /latest/meta-data/block-device-mapping/$\n",
+                      "RewriteRule ^.*$ /tmp/block/list.txt [L]\n",
+                      "RewriteCond %{REQUEST_URI} /latest/meta-data/block-device-mapping/(.*)\n",
+                      "RewriteRule ^.*$ /tmp/block/%1 [L]\n",
+                      "RewriteCond %{HTTP_HOST} (instance-data|169\\.254\\.169\\.254)\n",
+                      "RewriteRule ^/(.*) http://%{HTTP_HOST}/$1 [P,L]\n"
+                    ]
+                  ]
+                }
+              },
+              "/etc/security/limits.d/99-user.conf": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "*          -    stack      unlimited\n",
+                      "*          -    nofile         65536\n",
+                      "*          -    rss        unlimited\n",
+                      "*          -    core       unlimited\n",
+                      "*          -    nproc      unlimited\n",
+                      "*          -    memlock    unlimited\n"
+                    ]
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "Properties": {
+        "AvailabilityZones": [ { "Ref": "AvailabilityZone" } ],
+        "LaunchConfigurationName": { "Ref": "MGSMDSLaunchConfig" },
+        "VPCZoneIdentifier": [ { "Ref": "Subnet" } ],
+        "Cooldown": "300",
+        "MinSize": "2",
+        "MaxSize": "2",
+        "DesiredCapacity": "2",
+        "Tags": [
+          {
+            "Key": "lustre:type",
+            "PropagateAtLaunch": "true",
+            "Value": "mgt/mdt"
+          },
+          {
+            "Key": "loci:application",
+            "PropagateAtLaunch": "true",
+            "Value": { "Ref": "AWS::StackId" }
+          }
+        ]
+      },
+      "CreationPolicy": {
+        "ResourceSignal": {
+          "Count": "2",
+          "Timeout": "PT15M"
+        }
+      }
+    },
+    "OSS": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "DependsOn": "MGSMDS",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "/etc/loci.conf": {
+                "content": {
+                  "Fn::Join": [ "",
+                  [
+                    "[default]\n",
+                    "FsName:", { "Ref": "FsName" }, "\n",
+                    "FilesystemTable:", { "Ref": "FilesystemTable" }, "\n",
+                    "HaEnabled: false\n",
+                    "ImportBucket:", { "Ref": "ImportBucket" }, "\n",
+                    "ImportPrefix:", { "Ref": "ImportPrefix" }, "\n",
+                    "ImportDest:", { "Ref": "ImportDest" }, "\n",
+                    "LogDir: /var/log\n",
+                    "MdtRaid: jbod\n",
+                    "OstRaid: jbod\n",
+                    "MgsUseEbs: false\n",
+                    "MdsUseEbs: false\n",
+                    "OssUseEbs: false\n"
+                  ]
+                ]
+              },
+              "mode": "644",
+              "group": "root",
+              "user": "root"
+              },
+              "/etc/profile.d/aliases.sh": {
+                "content": {
+                  "Fn::Join": [ "",
+                  [
+                    "# Initialization script for bash and sh\n",
+                    "alias ssh=\"/usr/bin/ssh -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n",
+                    "alias scp=\"/usr/bin/scp -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n",
+                    "alias sftp=\"/usr/bin/sftp -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n"
+                  ]
+                ]
+              },
+              "mode": "644",
+              "group": "root",
+              "user": "root"
+              },
+              "/etc/environment": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "ftp_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                      "http_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ]  }, ":8080/\n",
+                      "https_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] },":8080/\n",
+                      "no_proxy=169.254.169.254,instance-data,s3.amazonaws.com,ec2.internal\n"
+                    ]
+                  ]
+                }
+              },
+              "/tmp/proxy.conf": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "LoadModule rewrite_module modules/mod_rewrite.so\n",
+                      "LoadModule proxy_module modules/mod_proxy.so\n",
+                      "LoadModule proxy_http_module modules/mod_proxy_http.so\n",
+                      "Listen 127.0.0.1:3128\n",
+                      "ServerName localhost\n",
+                      "Loglevel emerg\n",
+                      "PidFile /tmp/proxy.pid\n",
+                      "ErrorLog /dev/null\n",
+                      "RewriteEngine On\n",
+                      "RewriteCond %{REQUEST_URI} /latest/meta-data/block-device-mapping/$\n",
+                      "RewriteRule ^.*$ /tmp/block/list.txt [L]\n",
+                      "RewriteCond %{REQUEST_URI} /latest/meta-data/block-device-mapping/(.*)\n",
+                      "RewriteRule ^.*$ /tmp/block/%1 [L]\n",
+                      "RewriteCond %{HTTP_HOST} (instance-data|169\\.254\\.169\\.254)\n",
+                      "RewriteRule ^/(.*) http://%{HTTP_HOST}/$1 [P,L]\n"
+                    ]
+                  ]
+                }
+              },
+              "/etc/security/limits.d/99-user.conf": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "*          -    stack      unlimited\n",
+                      "*          -    nofile         65536\n",
+                      "*          -    rss        unlimited\n",
+                      "*          -    core       unlimited\n",
+                      "*          -    nproc      unlimited\n",
+                      "*          -    memlock    unlimited\n"
+                    ]
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "Properties": {
+        "AvailabilityZones": [ { "Ref": "AvailabilityZone" } ],
+        "LaunchConfigurationName": { "Ref": "OSSLaunchConfig" },
+        "VPCZoneIdentifier": [ { "Ref": "Subnet" } ],
+        "Cooldown": "300",
+        "MinSize": "1",
+        "MaxSize": {"Ref": "OssSize"},
+        "DesiredCapacity": {"Ref": "OssSize"},
+        "Tags": [
+          {
+            "Key": "lustre:type",
+            "PropagateAtLaunch": "true",
+            "Value": "ost"
+          },
+          {
+            "Key": "loci:application",
+            "PropagateAtLaunch": "true",
+            "Value": { "Ref": "AWS::StackId" }
+          }
+        ]
+      },
+      "CreationPolicy": {
+        "ResourceSignal": {
+          "Count": { "Ref": "OssSize" },
+          "Timeout": "PT15M"
+        }
+      }
+    },
+    "Client": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "DependsOn": "OSS",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "/etc/loci.conf": {
+                "content": {
+                  "Fn::Join": [ "",
+                  [
+                    "[default]\n",
+                    "FsName:", { "Ref": "FsName" }, "\n",
+                    "FilesystemTable:", { "Ref": "FilesystemTable" }, "\n",
+                    "HaEnabled: false\n",
+                    "ImportBucket:", { "Ref": "ImportBucket" }, "\n",
+                    "ImportPrefix:", { "Ref": "ImportPrefix" }, "\n",
+                    "ImportDest:", { "Ref": "ImportDest" }, "\n",
+                    "LogDir: /var/log\n",
+                    "MdtRaid: jbod\n",
+                    "OstRaid: jbod\n",
+                    "MgsUseEbs: false\n",
+                    "MdsUseEbs: false\n",
+                    "OssUseEbs: false\n"
+                  ]
+                ]
+              },
+              "mode": "644",
+              "group": "root",
+              "user": "root"
+              },
+              "/etc/profile.d/aliases.sh": {
+                "content": {
+                  "Fn::Join": [ "",
+                  [
+                    "# Initialization script for bash and sh\n",
+                    "alias machinelist='(f=`/bin/mktemp`; /bin/find /mnt/", { "Ref": "FsName" } ,"/${USER}/cluster/ -name '\"'\"'ip-*.ec2.internal'\"'\"' | /usr/bin/xargs /bin/grep -H client | /bin/awk -F/ '\"'\"'{ print $NF}'\"'\"' | /bin/awk -F: '\"'\"'{ print gensub (\"client([0-9]+)\", \"\\\\1\", \"g\", $2) \" \" $1; }'\"'\"' | /bin/sort -n -k 1 | /bin/awk -F'\"'\"' '\"'\"'  '\"'\"'{ print $NF }'\"'\"' > ${f}; echo ${f})'\n",
+                    "alias resizecluster=\"/usr/bin/python -c 'from sys import argv;from boto import connect_autoscale,connect_ec2;from loci.aws_connector import InstanceAwsConnector;ec2=connect_ec2();aws=InstanceAwsConnector();instance=aws.get_instance();autoscale=connect_autoscale();groupname=aws.get_instance().tags[\\\"aws:autoscaling:groupName\\\"];group=autoscale.get_all_groups([groupname])[0];exec(\\\"\\\" if group.desired_capacity<int(argv[1]) else \\\"raise Exception()\\\");group.max_size=argv[1];group.update();autoscale.set_desired_capacity(groupname,group.max_size,False)'\"\n",
+                    "alias resetcluster=\"/usr/bin/python -c 'from boto import connect_autoscale,connect_ec2;from loci.aws_connector import InstanceAwsConnector;from loci.loci_config import Config;from loci.ddb import DDB;ec2=connect_ec2();aws=InstanceAwsConnector();instance=aws.get_instance();autoscale=connect_autoscale();groupname=aws.get_instance().tags[\\\"aws:autoscaling:groupName\\\"];group=autoscale.get_all_groups([groupname])[0];instance_ids=[i.instance_id for i in group.instances];reservations=ec2.get_all_instances(instance_ids);instances=[i for r in reservations for i in r.instances if i.id!=instance.id];group.min_size=1;group.update();[autoscale.terminate_instance(i.id, True) for i in instances];config=Config();ddb=DDB(aws.dynamodb);table=ddb.get_table(config.get(\\\"FilesystemTable\\\"));table.new_item(hash_key=\\\"client_role_index\\\", attrs={\\\"next\\\": 1}).put()'\"\n",
+                    "alias ssh=\"/usr/bin/ssh -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n",
+                    "alias scp=\"/usr/bin/scp -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n",
+                    "alias sftp=\"/usr/bin/sftp -c arcfour -oUserKnownHostsFile=/dev/null -oForwardX11=no -oConnectTimeout=30 -oStrictHostKeyChecking=no -oBatchMode=yes -oLogLevel=ERROR\"\n"
+                  ]
+                ]
+              },
+              "mode": "644",
+              "group": "root",
+              "user": "root"
+              },
+              "/etc/environment": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "ftp_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                      "http_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ]  }, ":8080/\n",
+                      "https_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] },":8080/\n",
+                      "no_proxy=169.254.169.254,instance-data,s3.amazonaws.com,ec2.internal\n"
+                    ]
+                  ]
+                }
+              },
+              "/etc/init.d/dropcluster": {
+                "content": {
+                  "Fn::Join": [ "",
+                  [
+                    "#!/bin/sh\n",
+                    "#\n",
+                    "# dropcluster host remover from cluster pool\n",
+                    "#\n",
+                    "# chkconfig:   345 99 1\n",
+                    "# description: Remove file related to this host on cluster pool\n",
+                    "#\n",
+                    "DIR=/mnt/", { "Ref": "FsName" } ,"\n",
+                    "USER=ec2-user\n",
+                    "FILE=${DIR}/${USER}/cluster/`/usr/bin/curl -s http://instance-data/latest/meta-data/local-hostname`\n",
+                    "\n",
+                    "start() {\n",
+                    "  echo `/bin/hostname` > ${FILE}\n",
+                    "  /bin/chown ${USER}:${USER} ${FILE}\n",
+                    "  touch /var/lock/subsys/dropcluster\n",
+                    "  return 0\n",
+                    "}\n",
+                    "\n",
+                    "stop() {\n",
+                    " \n",
+                    " /bin/rm -f ${FILE}\n",
+                    " return 0\n",
+                    "}\n",
+                    "\n",
+                    "case \"$1\" in\n",
+                    " start)\n",
+                    "  start\n",
+                    "  RETVAL=$?\n",
+                    "  ;;\n",
+                    " stop)\n",
+                    "  stop\n",
+                    "  RETVAL=$?\n",
+                    "  ;;\n",
+                    "esac\n",
+                    "\n",
+                    "exit $RETVAL\n"
+                  ]
+                ]
+              },
+              "mode": "755",
+              "group": "root",
+              "user": "root"
+              },
+              "/etc/security/limits.d/99-user.conf": {
+                "mode": "0644",
+                "owner": "root",
+                "group": "root",
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "*          -    stack      unlimited\n",
+                      "*          -    nofile         65536\n",
+                      "*          -    rss        unlimited\n",
+                      "*          -    core       unlimited\n",
+                      "*          -    nproc      unlimited\n",
+                      "*          -    memlock    unlimited\n"
+                    ]
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "Properties": {
+        "AvailabilityZones": [ { "Ref": "AvailabilityZone" } ],
+        "LaunchConfigurationName": { "Ref": "ClientLaunchConfig" },
+        "VPCZoneIdentifier": [ { "Ref": "Subnet" } ],
+        "Cooldown": "300",
+        "MinSize": "1",
+        "MaxSize": {"Ref": "ClientSize"},
+        "DesiredCapacity": {"Ref": "ClientSize"},
+        "Tags": [
+          {
+            "Key": "lustre:type",
+            "PropagateAtLaunch": "true",
+            "Value": "client"
+          },
+          {
+            "Key": "loci:application",
+            "PropagateAtLaunch": "true",
+            "Value": { "Ref": "AWS::StackId" }
+          }
+        ]
+      },
+      "CreationPolicy": {
+        "ResourceSignal": {
+          "Count": { "Ref": "ClientSize" },
+          "Timeout": "PT15M"
+        }
+      }
+    },
+    "MGSMDSLaunchConfig": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "IamInstanceProfile": { "Ref": "InstanceProfile" },
+        "AssociatePublicIpAddress": true,
+	"InstanceMonitoring": false,
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sdb",
+            "VirtualName" : "ephemeral0"
+          },
+          {
+            "DeviceName": "/dev/sdc",
+            "VirtualName" : "ephemeral1"
+          },
+          {
+            "DeviceName": "/dev/sdd",
+            "VirtualName" : "ephemeral2"
+          },
+          {
+            "DeviceName": "/dev/sde",
+            "VirtualName" : "ephemeral3"
+          }
+        ],
+        "KeyName": { "Ref": "KeyPair" },
+        "ImageId": { "Ref": "MgtImage" },
+        "SecurityGroups": [ { "Ref": "SecurityGroup" } ],
+        "InstanceType": { "Ref": "MgtInstance" },
+        "SpotPrice": { "Ref": "MgtPrice" },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#cloud-config\n",
+                "\n",
+                "repo_update: false\n",
+                "repo_upgrade: false\n",
+                "\n",
+                "runcmd:\n",
+                " - set -x\n",
+                " - ulimit -SHn 16384\n",
+                " - ulimit -SHs unlimited\n",
+                " - while [ x`/usr/bin/python -c \"from loci.aws_connector import InstanceAwsConnector;aws=InstanceAwsConnector();aws.get_instance().tags['lustre:type']; print 'ok';\"` != xok ]; do sleep 1; done\n",
+                " - /opt/aws/bin/cfn-init --stack=", { "Ref": "AWS::StackName" }, " --resource=MGSMDS --region=", { "Ref": "AWS::Region"}, "\n",
+                " - /bin/su ec2-user -c '/usr/sbin/httpd -f /tmp/proxy.conf'\n",
+                " - /sbin/iptables -t nat -A OUTPUT -d 169.254.169.254 -m owner --uid 0 -p tcp --dport 80 -j DNAT --to 127.0.0.1:3128\n",
+                " - /bin/find /dev -type b -regex '/dev/\\(xv\\|s\\)d[b-z]' > /tmp/blocklist.txt\n",
+                " - /usr/bin/xargs -a /tmp/blocklist.txt /bin/umount\n",
+                " - /usr/bin/xargs -a /tmp/blocklist.txt /sbin/pvcreate\n",
+                " - /usr/bin/xargs -a /tmp/blocklist.txt /sbin/vgcreate vg0\n",
+                " - eval `/usr/bin/python -c \"from loci.aws_connector import InstanceAwsConnector;from loci.loci_config import Config;from loci.ddb import DDB;aws=InstanceAwsConnector();config=Config();ddb=DDB(aws.dynamodb);table=ddb.get_table(config.get('FilesystemTable'));item=table.new_item('couter');item.add_attribute('n', 1);counter=item.save(return_values='ALL_OLD');type='mgt' if not 'Attributes' in counter.keys() else 'mdt';aws.get_instance().add_tag('lustre:type',type);print 'export TYPE='+type;\"`\n",
+                " - if [ x${TYPE} == xmgt ]\n",
+                " - then\n",
+                " -  /bin/env -i /usr/bin/pip install awscli\n",
+                " -  /bin/env -i AWS_DEFAULT_REGION=", { "Ref": "AWS::Region"}," /usr/bin/aws ec2 attach-network-interface --network-interface-id ", { "Ref": "Interface"}," --instance-id `/usr/bin/curl -s http://instance-data/latest/meta-data/instance-id` --device-index 1\n",
+                " -  while [ -z \"`ip route list default | egrep '^default .* dev eth1 .*'`\" ]; do /bin/sleep 2; done\n",
+                " -  /usr/sbin/httpd -f /etc/httpd/proxy.conf\n",
+                " -  /usr/bin/install -m 700 -o root -g root -d /root/.ssh\n",
+                " -  /usr/bin/ssh-keygen -q -b 768 -t rsa -N '' -C '' -f /root/.ssh/id_rsa\n",
+                " -  /usr/bin/install -m 700 -o ec2-user -g ec2-user -d /home/ec2-user\n",
+                " -  /usr/bin/install -m 400 -o ec2-user -g ec2-user /root/.ssh/id_rsa{,.pub} /home/ec2-user/.ssh/\n",
+                " -  /bin/cat /home/ec2-user/.ssh/id_rsa.pub >> /home/ec2-user/.ssh/authorized_keys\n",
+                " -  /bin/bash -c 'while true; do /usr/bin/nc -l 1050 < /root/.ssh/id_rsa.pub; done &' < /dev/zero > /dev/null 2> /dev/null &\n",
+                " -  disown %1\n",
+                " -  /bin/bash -c '(echo \"data_source \\\"Clients\\\" `/usr/bin/nc -d -l 1051`\" >> /etc/ganglia/gmetad.conf; /sbin/service gmond restart; /sbin/service gmetad restart; /sbin/service loci-monitor restart )' < /dev/zero > /dev/null 2> /dev/null &\n",
+                " - elif [ x${TYPE} == xmdt ]\n",
+                " - then\n",
+                " -  while [ \"`/bin/ping -q -c 1 -W 1 ", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, " 1> /dev/null; echo $?`\" -eq 1 ]; do /bin/sleep 3; done\n",
+                " -  /bin/sleep $(( 10 + `/usr/bin/od -N 1 -A n -t d /dev/random` % 10 ))\n",
+                " -  /usr/bin/nc ", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, " 1050 >> /home/ec2-user/.ssh/authorized_keys\n",
+                " - else\n",
+                " -  exit 1\n",
+                " - fi\n",
+                " - /opt/aws/bin/cfn-signal -e 0 --stack=", { "Ref": "AWS::StackName" }, " --resource=MGSMDS --region=", { "Ref": "AWS::Region"}, "\n",
+                " - /bin/mkdir -p /tmp/block\n",
+                " - echo -ne 'ami\\nroot\\nephemeral0' > /tmp/block/list.txt\n",
+                " - echo -ne '/dev/xvda' > /tmp/block/ami\n",
+                " - echo -ne '/dev/xvda' > /tmp/block/root\n",
+                " - echo -ne 'vg0/'${TYPE} > /tmp/block/ephemeral0\n",
+                " - if [ x${TYPE} == xmgt ]\n",
+                " - then\n",
+                " -   /sbin/lvcreate -i `awk 'END{ print NR }' /tmp/blocklist.txt` -n mgt  -l  70%FREE vg0\n",
+                " -   /sbin/lvcreate -i `awk 'END{ print NR }' /tmp/blocklist.txt` -n rrds -l 100%FREE vg0\n",
+                " -   /sbin/mkfs.ext4 -O dir_index,sparse_super,inline_data,large_file -E lazy_itable_init=1,lazy_journal_init=1 -F -L rrds /dev/vg0/rrds\n",
+                " -   /bin/mount /dev/vg0/rrds /var/lib/ganglia/rrds\n",
+                " -   /bin/chown ganglia:ganglia /var/lib/ganglia/rrds\n",
+                " -   echo -ne 'ami\\nroot\\nrrds\\nephemeral0' > /tmp/block/list.txt\n",
+                " -   echo -ne 'vg0/rrds' > /tmp/block/rrds\n",
+                " - else\n",
+                " -   /sbin/lvcreate -i `awk 'END{ print NR }' /tmp/blocklist.txt` -n ${TYPE} -l 100%FREE vg0\n",
+                " - fi\n",
+                " - loci init\n",
+                " - /sbin/iptables -t nat -D OUTPUT -d 169.254.169.254 -m owner --uid 0 -p tcp --dport 80 -j DNAT --to 127.0.0.1:3128\n",
+                " - kill `cat /tmp/proxy.pid`\n"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "OSSLaunchConfig": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "IamInstanceProfile": { "Ref": "InstanceProfile" },
+        "AssociatePublicIpAddress": false,
+	"InstanceMonitoring": false,
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sdb",
+            "VirtualName" : "ephemeral0"
+          },
+          {
+            "DeviceName": "/dev/sdc",
+            "VirtualName" : "ephemeral1"
+          },
+          {
+            "DeviceName": "/dev/sdd",
+            "VirtualName" : "ephemeral2"
+          },
+          {
+            "DeviceName": "/dev/sde",
+            "VirtualName" : "ephemeral3"
+          },
+          {
+            "DeviceName": "/dev/sdf",
+            "VirtualName" : "ephemeral4"
+          },
+          {
+            "DeviceName": "/dev/sdg",
+            "VirtualName" : "ephemeral5"
+          },
+          {
+            "DeviceName": "/dev/sdh",
+            "VirtualName" : "ephemeral6"
+          },
+          {
+            "DeviceName": "/dev/sdi",
+            "VirtualName" : "ephemeral7"
+          },
+          {
+            "DeviceName": "/dev/sdj",
+            "VirtualName" : "ephemeral8"
+          },
+          {
+            "DeviceName": "/dev/sdk",
+            "VirtualName" : "ephemeral9"
+          },
+          {
+            "DeviceName": "/dev/sdl",
+            "VirtualName" : "ephemeral10"
+          },
+          {
+            "DeviceName": "/dev/sdm",
+            "VirtualName" : "ephemeral11"
+          },
+          {
+            "DeviceName": "/dev/sdn",
+            "VirtualName" : "ephemeral12"
+          },
+          {
+            "DeviceName": "/dev/sdo",
+            "VirtualName" : "ephemeral13"
+          },
+          {
+            "DeviceName": "/dev/sdp",
+            "VirtualName" : "ephemeral14"
+          },
+          {
+            "DeviceName": "/dev/sdq",
+            "VirtualName" : "ephemeral15"
+          },
+          {
+            "DeviceName": "/dev/sdr",
+            "VirtualName" : "ephemeral16"
+          },
+          {
+            "DeviceName": "/dev/sds",
+            "VirtualName" : "ephemeral17"
+          },
+          {
+            "DeviceName": "/dev/sdt",
+            "VirtualName" : "ephemeral18"
+          },
+          {
+            "DeviceName": "/dev/sdu",
+            "VirtualName" : "ephemeral19"
+          },
+          {
+            "DeviceName": "/dev/sdv",
+            "VirtualName" : "ephemeral20"
+          },
+          {
+            "DeviceName": "/dev/sdw",
+            "VirtualName" : "ephemeral21"
+          },
+          {
+            "DeviceName": "/dev/sdx",
+            "VirtualName" : "ephemeral22"
+          },
+          {
+            "DeviceName": "/dev/sdy",
+            "VirtualName" : "ephemeral23"
+          },
+          {
+            "DeviceName": "/dev/sdz",
+            "VirtualName" : "ephemeral24"
+          }
+        ],
+        "KeyName": { "Ref": "KeyPair" },
+        "ImageId": { "Ref": "OssImage" },
+        "SecurityGroups": [ { "Ref": "SecurityGroup" } ],
+        "InstanceType": { "Ref": "OssInstance" },
+        "SpotPrice": { "Ref": "OssPrice" },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#cloud-config\n",
+                "\n",
+                "repo_update: false\n",
+                "repo_upgrade: false\n",
+                "\n",
+                "runcmd:\n",
+                " - set -x\n",
+                " - ulimit -SHn 16384\n",
+                " - ulimit -SHs unlimited\n",
+                " - ftp_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                " - http_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                " - https_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                " - no_proxy=169.254.169.254,instance-data,s3.amazonaws.com,ec2.internal\n",
+                " - export ftp_proxy http_proxy https_proxy no_proxy\n",
+                " - /usr/bin/nc ", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, " 1050 >> /home/ec2-user/.ssh/authorized_keys\n",
+                " - while [ x`/usr/bin/python -c \"from loci.aws_connector import InstanceAwsConnector;aws=InstanceAwsConnector();aws.get_instance().tags['lustre:type']; print 'ok';\"` != xok ]; do sleep 1; done\n",
+                " - /opt/aws/bin/cfn-signal -e 0 --stack=", { "Ref": "AWS::StackName" }, " --resource=OSS --region=", { "Ref": "AWS::Region"}, "\n",
+                " - /opt/aws/bin/cfn-init --stack=", { "Ref": "AWS::StackName" }, " --resource=OSS --region=", { "Ref": "AWS::Region"}, "\n",
+                " - /bin/su ec2-user -c '/usr/sbin/httpd -f /tmp/proxy.conf'\n",
+                " - /sbin/iptables -t nat -A OUTPUT -d 169.254.169.254 -m owner --uid 0 -p tcp --dport 80 -j DNAT --to 127.0.0.1:3128\n",
+                " - /bin/find /dev -type b -regex '/dev/\\(xv\\|s\\)d[b-z]' > /tmp/blocklist.txt\n",
+                " - /usr/bin/xargs -a /tmp/blocklist.txt /bin/umount\n",
+                " - /usr/bin/xargs -a /tmp/blocklist.txt /sbin/pvcreate\n",
+                " - /usr/bin/xargs -a /tmp/blocklist.txt /sbin/vgcreate vg0\n",
+                " - /sbin/lvcreate -i `awk 'END{ print NR }' /tmp/blocklist.txt` -n oss -l 100%FREE vg0\n",
+                " - /bin/mkdir -p /tmp/block\n",
+                " - echo -ne 'ami\\nroot\\nephemeral0' > /tmp/block/list.txt\n",
+                " - echo -ne '/dev/xvda' > /tmp/block/ami\n",
+                " - echo -ne '/dev/xvda' > /tmp/block/root\n",
+                " - echo -ne 'vg0/oss' > /tmp/block/ephemeral0\n",
+                " - loci init\n",
+                " - /sbin/iptables -t nat -D OUTPUT -d 169.254.169.254 -m owner --uid 0 -p tcp --dport 80 -j DNAT --to 127.0.0.1:3128\n",
+                " - kill `cat /tmp/proxy.pid`\n"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "ClientLaunchConfig": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "IamInstanceProfile": { "Ref": "InstanceProfile" },
+        "AssociatePublicIpAddress": false,
+	"InstanceMonitoring": false,
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sdb",
+            "VirtualName" : "ephemeral0"
+          },
+          {
+            "DeviceName": "/dev/sdc",
+            "VirtualName" : "ephemeral1"
+          },
+          {
+            "DeviceName": "/dev/sdd",
+            "VirtualName" : "ephemeral2"
+          },
+          {
+            "DeviceName": "/dev/sde",
+            "VirtualName" : "ephemeral3"
+          }
+        ],
+        "KeyName": { "Ref": "KeyPair" },
+        "ImageId": { "Ref": "ClientImage" },
+        "SecurityGroups": [ { "Ref": "SecurityGroup" } ],
+        "InstanceType": { "Ref": "ClientInstance" },
+        "SpotPrice": { "Ref": "ClientPrice" },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#cloud-config\n",
+                "\n",
+                "repo_update: false\n",
+                "repo_upgrade: false\n",
+                "\n",
+                "runcmd:\n",
+                " - set -x\n",
+                " - ulimit -SHn 16384\n",
+                " - ulimit -SHs unlimited\n",
+                " - DIR=/mnt/", { "Ref": "FsName" } ,"\n",
+                " - USER=ec2-user\n",
+                " - CLUSTERSIZE=", { "Ref": "ClientSize" }, "\n",
+                " - ftp_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                " - http_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                " - https_proxy=http://", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, ":8080/\n",
+                " - no_proxy=169.254.169.254,instance-data,s3.amazonaws.com,ec2.internal\n",
+                " - export ftp_proxy http_proxy https_proxy no_proxy\n",
+                " - /usr/bin/nc ", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, " 1050 >> /home/${USER}/.ssh/authorized_keys\n",
+                " - /bin/env -i WHEN='| /usr/bin/at -M now + 60 minutes' CMD2='echo -e '\\''eval ${CMD}; eval \"${CMD2} ${WHEN}\"'\\' CMD='/usr/bin/python -c '\\''import os,sys;from boto import connect_autoscale,connect_ec2;from loci.aws_connector import InstanceAwsConnector;ec2=connect_ec2();aws=InstanceAwsConnector();instance=aws.get_instance();autoscale=connect_autoscale();groupname=aws.get_instance().tags[\"aws:autoscaling:groupName\"];exec(\"autoscale.terminate_instance(instance.id, True)\" if os.getloadavg()[1] < 0.05 else \"sys.exit(0)\");'\\' /bin/sh -c 'eval \"${CMD2} ${WHEN/60/50}\"'\n",
+                " - while [ x`/usr/bin/python -c \"from loci.aws_connector import InstanceAwsConnector;aws=InstanceAwsConnector();aws.get_instance().tags['lustre:type']; print 'ok';\"` != xok ]; do sleep 1; done\n",
+                " - /opt/aws/bin/cfn-init --stack=", { "Ref": "AWS::StackName" }, " --resource=Client --region=", { "Ref": "AWS::Region"}, "\n",
+                " - CPUS=( $(cat /sys/devices/system/cpu/cpu*/topology/thread_siblings_list | cut -s -d, -f2- | tr ',' '\\n' | sort -un ) )\n",
+                " - for CPU in ${CPUS[@]}\n",
+                " - do\n",
+                " -   echo 0 > /sys/devices/system/cpu/cpu${CPU}/online\n",
+                " - done\n",
+                " - while [ ${#CPUS[@]} -gt 0 -a -z \"$( dmesg | grep \"CPU ${CPUS[${#CPUS[@]}-1]} is now offline\" )\" ]\n",
+                " - do\n",
+                " -   sleep 2\n",
+                " - done\n",
+                " - loci init\n",
+                " - while true\n",
+                " - do\n",
+                " -   if [ -d ${DIR}/.lustre ]\n",
+                " -   then\n",
+                " -    break\n",
+                " -   fi\n",
+                " -  /bin/sleep 3\n",
+                " - done\n",
+                " - if [ x`/bin/hostname` == xclient00 ]\n",
+                " - then\n",
+                " -  /usr/bin/lfs setstripe --stripe-count ", { "Ref": "OssSize" }, " --stripe-size 8388608 ${DIR}/\n",
+                " -  /bin/mkdir -p ${DIR}/${USER}/cluster\n",
+                " -  /bin/chown -R ${USER}:${USER} ${DIR}/${USER}\n",
+                " -  /bin/rm -f ${DIR}/${USER}/cluster/identity ${DIR}/${USER}/cluster/identity.pub\n",
+                " -  /usr/bin/ssh-keygen -q -b 768 -t rsa -N '' -C '' -f ${DIR}/${USER}/cluster/identity\n",
+                " -  /usr/bin/pip install awscli\n",
+                " - fi\n",
+                " - while true\n",
+                " - do\n",
+                " -  if [ -f ${DIR}/${USER}/cluster/identity ]\n",
+                " -  then\n",
+                " -   break\n",
+                " -  fi\n",
+                " -  /bin/sleep 4\n",
+                " - done\n",
+                " - if [ x`/bin/hostname` == `/usr/bin/printf xclient%02d $((CLUSTERSIZE-1))` ]\n",
+                " - then\n",
+                " -  FILE=${DIR}/${USER}/cluster/initial-size-is-${CLUSTERSIZE}\n",
+                " -  /bin/touch ${FILE}\n",
+                " -  /bin/chown ${USER}:${USER} ${FILE}\n",
+                " - fi\n",
+                " - /bin/cat ${DIR}/${USER}/cluster/identity.pub >> /home/${USER}/.ssh/authorized_keys\n",
+                " - /usr/bin/install -o ${USER} -g ${USER} -m 400 ${DIR}/${USER}/cluster/identity /home/${USER}/.ssh/id_rsa\n",
+                " - /bin/find /dev -type b -regex '/dev/\\(xv\\|s\\)d[b-z]' > /tmp/blocklist.txt\n",
+                " - if [ -s /tmp/blocklist.txt ]\n",
+                " - then\n",
+                " -  /usr/bin/xargs -a /tmp/blocklist.txt /bin/umount\n",
+                " -  /usr/bin/xargs -a /tmp/blocklist.txt /sbin/pvcreate\n",
+                " -  /usr/bin/xargs -a /tmp/blocklist.txt /sbin/vgcreate vg0\n",
+                " -  /sbin/lvcreate -i `/bin/awk 'END{ print NR }' /tmp/blocklist.txt` -n scr01 -l 100%FREE vg0\n",
+                " - fi\n",
+                " - if [ -e /dev/vg0/scr01 ]\n",
+                " - then\n",
+                " -  /bin/mkdir /scr01\n",
+                " -  /sbin/mkfs.ext4 -O dir_index,sparse_super,inline_data,large_file -E lazy_itable_init=1,lazy_journal_init=1 -F -L /scr01 /dev/vg0/scr01\n",
+                " -  /bin/mount -t ext4 /dev/vg0/scr01 /scr01\n",
+                " -  /bin/chmod 4777 /scr01\n",
+                " - fi\n",
+                " - if [ x`/bin/hostname` != xclient00 ]\n",
+                " - then\n",
+                " -  /sbin/service crond stop\n",
+                " - fi\n",
+                " - /opt/aws/bin/cfn-signal -e 0 --stack=", { "Ref": "AWS::StackName" }, " --resource=Client --region=", { "Ref": "AWS::Region"}, "\n",
+                " - for url in \\\n",
+                " -  http://registrationcenter-download.intel.com/akdlm/irc_nas/8077/l_mpi-rt_p_5.0.3.049.tgz \\\n",
+                " -  http://registrationcenter-download.intel.com/akdlm/irc_nas/8721/l_mpi-rt_p_5.1.3.181.tgz \\\n",
+                " -  http://registrationcenter-download.intel.com/akdlm/irc_nas/9061/onlinedata/rpm/intel-mkl-210-11.3.3-210.x86_64.rpm \\\n",
+                " -  http://registrationcenter-download.intel.com/akdlm/irc_nas/2251/l_cproc_p_11.1.080_redist.tgz \\\n",
+                " -  http://registrationcenter-download.intel.com/akdlm/irc_nas/2252/l_cprof_p_11.1.080_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/25/cc/l_ccompxe_2011.13.367_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/63/37/l_fcompxe_2011.13.367_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/42/07/l_ccompxe_2013_sp1.4.211_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/51/75/l_fcompxe_2013_sp1.4.211_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/1e/e1/l_ccompxe_2015.2.164_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/1e/e1/l_fcompxe_2015.2.164_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/c3/5a/l_comp_lib_2016.3.210_comp.cpp_redist.tgz \\\n",
+                " -  https://software.intel.com/sites/default/files/managed/c3/5a/l_comp_lib_2016.3.210_comp.for_redist.tgz \n",
+                " - do\n",
+                " -  FILE=${url##*/}\n",
+                " -  if [ x`/bin/hostname` == xclient00 ]\n",
+                " -  then\n",
+                " -   /usr/bin/wget -q -k ${url} -O /mnt/", { "Ref": "FsName" } ,"/${USER}/.${FILE}.downloading\n",
+                " -   MD5=( `/usr/bin/md5sum /mnt/", { "Ref": "FsName" } ,"/${USER}/.${FILE}.downloading` )\n",
+                " -   /bin/mv /mnt/", { "Ref": "FsName" } ,"/${USER}/.${FILE}.downloading /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_${MD5[0]}\n",
+                " -   /bin/chown ${USER}:${USER} /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_${MD5[0]}\n",
+                " -  fi\n",
+                " -  while ! test -f /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_[0-9a-f]*; do /bin/sleep 5; done\n",
+                " -  FILEGLOB=$( echo /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_[0-9a-f]* )\n",
+                " -  CHECKSUM=${FILEGLOB##*_}\n",
+                " -  while true\n",
+                " -  do\n",
+                " -   MD5=( `/usr/bin/md5sum /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_${CHECKSUM}` )\n",
+                " -   if [ x${CHECKSUM} == x${MD5[0]} ]\n",
+                " -   then\n",
+                " -    break\n",
+                " -   fi\n",
+                " -   /bin/sleep 6\n",
+                " -  done\n",
+                " -  MODULEDIR=${FILE%.*}\n",
+                " -  /bin/mkdir -m 755 -p /opt/intel/${MODULEDIR}\n",
+                " -  if [ x${FILE/.*} == xl_mpi-rt_p_5 ]\n",
+                " -  then\n",
+                " -   /bin/tar xf /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_${CHECKSUM} -C /tmp\n",
+                " -   /bin/sed -i -e \"s,ACCEPT_EULA=decline,ACCEPT_EULA=accept,;s,PSET_INSTALL_DIR=/opt/intel,PSET_INSTALL_DIR=/opt/intel/${MODULEDIR},\" /tmp/${MODULEDIR}/silent.cfg\n",
+                " -   while true\n",
+                " -   do\n",
+                " -     /bin/env HOME=/opt/intel/${MODULEDIR} USER=root /tmp/${MODULEDIR}/install.sh -s /tmp/${MODULEDIR}/silent.cfg\n",
+                " -     if [ -d /opt/intel/${MODULEDIR}/impi ]\n",
+                " -     then\n",
+                " -       break\n",
+                " -     fi\n",
+                " -   done\n",
+                " -  elif [ x${FILE/.*} == xintel-mkl-210-11 ]\n",
+                " -  then\n",
+                " -   /usr/bin/rpm2cpio /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_${CHECKSUM} | ( cd /opt/intel/${MODULEDIR}; /bin/cpio -idm --quiet; /bin/find . -type f -name '*.so' -o -type d -name locale | while read e; do /bin/mv ${e}  ${e#*/*/*/*/*/*/*/*/*}; done; rm -rf opt)\n",
+                " -   echo /opt/intel/${MODULEDIR} > /etc/ld.so.conf.d/${MODULEDIR}.conf\n",
+                " -   /sbin/ldconfig -n /opt/intel/${MODULEDIR}\n",
+                " -  else\n",
+                " -   /bin/tar xf /mnt/", { "Ref": "FsName" } ,"/${USER}/${FILE}_${CHECKSUM} -C /tmp\n",
+                " -   HOME=/opt/intel/${MODULEDIR} USER=root /tmp/${MODULEDIR}/install.sh -e --install-path /opt/intel/${MODULEDIR}\n",
+                " -  fi\n",
+                " -  rm -rf /tmp/${MODULEDIR}\n",
+                " - done\n",
+                " - /usr/bin/yum install --disablerepo='*' --enablerepo=base -y compat-openmpi screen\n",
+                " - IPADDR=''\n",
+                " - if [ x`/bin/hostname` == xclient00 ]\n",
+                " - then\n",
+                " -   if [ -e /dev/vg0/scr01 ]\n",
+                " -   then\n",
+                " -     /bin/mv /var/lib/ganglia/rrds /scr01/\n",
+                " -     /bin/ln -s /scr01/rrds /var/lib/ganglia/rrds\n",
+                " -   else\n",
+                " -     /bin/mv /var/lib/ganglia/rrds /mnt/", { "Ref": "FsName" } ,"/\n",
+                " -     /bin/ln -s /mnt/", { "Ref": "FsName" } ,"/rrds /var/lib/ganglia/rrds\n",
+                " -   fi\n",
+                " -   IPADDR=`/usr/bin/curl -s http://instance-data/latest/meta-data/local-ipv4`\n",
+                " - else\n",
+                " -   while true\n",
+                " -   do\n",
+                " -     IPADDR=\"`/bin/grep -sH client ${DIR}/${USER}/cluster/ip-172-20-*.ec2.internal | /bin/sed -ne '/:client00$/ {s,.*ip-\\([0-9]\\+\\)-\\([0-9]\\+\\)-\\([0-9]\\+\\)-\\([0-9]\\+\\)\\.ec2\\.internal:client00$,\\1.\\2.\\3.\\4,; p;}'`\"\n",
+                " -     if [ -n \"${IPADDR}\" ]\n",
+                " -     then\n",
+                " -       break\n",
+                " -     fi\n",
+                " -     sleep 7\n",
+                " -   done\n",
+                " - fi\n",
+                " - echo -e ${IPADDR}'\\tclient00' >> /etc/hosts\n",
+                " - /usr/sbin/gmond -t | /bin/sed -ne '/mcast_join\\|bind = /!{ s,\\(send_metadata_interval =\\) 0,\\1  10,;s,\\(name = \\|owner = \\)\\\"unspecified\\\",\\1\\\"Clients\\\",; s,\\(udp_send_channel {\\),\\1\\n  host = '${IPADDR}',;s,\\(# Size of the UDP buffer\\),retry_bind = true\\n  \\1,;p;}' > /etc/ganglia/gmond.conf\n",
+                " - for file in diskstat.pyconf netstats.pyconf entropy.pyconf lustre.pyconf multicpu.conf diskfree.pyconf vm_stats.pyconf\n",
+                " - do\n",
+                " -   /bin/mv /etc/ganglia/conf.d/${file} /etc/ganglia/conf.d/${file}-disabled\n",
+                " - done\n",
+                " - /sbin/service gmond restart\n",
+                " - /sbin/service gmetad restart\n",
+                " - if [ x`/bin/hostname` == xclient00 ]\n",
+                " - then\n",
+                " -   /usr/bin/atq | /bin/cut -f 1 | /usr/bin/xargs -n 1 /usr/bin/atrm\n",
+                " -   /usr/bin/curl -s http://instance-data/latest/meta-data/local-ipv4 | /usr/bin/nc ", { "Fn::GetAtt": [ "Interface", "PrimaryPrivateIpAddress" ] }, " 1051\n",
+                " - fi\n",
+                " - /sbin/chkconfig --add dropcluster\n",
+                " - /sbin/chkconfig dropcluster on\n",
+                " - FILE=/mnt/", { "Ref": "FsName" } ,"/", { "Ref" : "ImportDest" }, "/autoexec.sh\n",
+                " - if [ -e ${FILE} ]\n",
+                " - then\n",
+                " -  source ${FILE}\n",
+                " - fi\n",
+                " - /etc/init.d/dropcluster start\n"
+              ]
+            ]
+          }
+        }
+      }
+    }
+  }
+}
